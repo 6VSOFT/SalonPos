@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>美容院 POS</title>
+<meta name="theme-color" content="#b83b6e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top"><h1 id="title">美容院 POS</h1></header>
+<main id="view"></main>
+<nav class="tabs">
+  <button data-act="tab" data-tab="cal"><span>📅</span>预约</button>
+  <button data-act="tab" data-tab="cust"><span>👤</span>顾客</button>
+  <button data-act="tab" data-tab="sales"><span>💳</span>配套收款</button>
+  <button data-act="tab" data-tab="set"><span>⚙️</span>设置</button>
+</nav>
+<dialog id="sheet"></dialog>
+<div id="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "name": "美容院 POS",
+  "short_name": "美容院POS",
+  "description": "美容院预约、配套收款与顾客管理",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#faf6f7",
+  "theme_color": "#b83b6e",
+  "lang": "zh-Hans",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
