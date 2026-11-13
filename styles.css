@@ -108,6 +108,20 @@ pre.receipt { background: var(--card); border: 1px dashed var(--line); border-ra
 .totals .neg { color: var(--danger); }
 .method-sum { font-size: 13px; color: var(--muted); margin: -4px 0 12px; }
 
+/* products */
+.tabs button { position: relative; }
+.nb { position: absolute; top: 3px; left: calc(50% + 6px); min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--danger); color: #fff; font-size: 11px; line-height: 17px; font-weight: 700; }
+.chips { display: flex; gap: 6px; overflow-x: auto; margin: -4px 0 12px; padding-bottom: 2px; scrollbar-width: none; }
+.chip { flex-shrink: 0; border: 1px solid var(--line); background: var(--card); border-radius: 16px; padding: 4px 12px; font-size: 13px; color: var(--muted); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 12px 0 6px; font-size: 14px; }
+.kv span { color: var(--muted); }
+.kv b { font-weight: 600; font-variant-numeric: tabular-nums; }
+label.check-row { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 15px; }
+label.check-row input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; }
+.neg { color: var(--danger); }
+.pos { color: var(--ok); }
+
 /* login */
 #login { display: none; }
 body.locked { padding-bottom: 0; }

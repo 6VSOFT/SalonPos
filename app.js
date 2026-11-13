@@ -9,7 +9,8 @@ const DEFAULTS = {
   payments: [],   // {id,no,custId,pkgId,amount,method,date,note}
   usages: [],     // 扣次记录 {id,pkgId,custId,date,note,apptId}
   appts: [],      // {id,custId,date,time,dur,service,pkgId,status,notes}
-  products: [],   // 零售产品 {id,name,price,stock(null=不追踪)}
+  products: [],   // 零售产品 {id,name,category,sku,price,cost,stock(null=不追踪),minStock,active,notes,createdAt}
+  stockMoves: [], // 库存记录 {id,prodId,type(init|in|adjust|sale|void),qty(+/-),after,date,note,at}
   sales: []       // 零售单 {id,no,custId,walkName,walkPhone,items[{prodId,name,price,qty}],subtotal,discount,total,method,received,date,note}
 };
 function load() {
@@ -35,6 +36,9 @@ const today = () => iso(new Date());
 const num = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
 const r2 = n => Math.round(n * 100) / 100;
 const tracked = p => typeof p.stock === 'number';
+const prodActive = p => p.active !== false;
+const lowStock = p => prodActive(p) && tracked(p) && p.stock <= (typeof p.minStock === 'number' ? p.minStock : 0);
+const prod = id => db.products.find(p => p.id === id);
 const money = n => `${db.settings.currency} ${num(n).toFixed(2)}`;
 const WD = ['日', '一', '二', '三', '四', '五', '六'];
 const fmtDate = s => { const d = new Date(s + 'T00:00'); return `${s} (周${WD[d.getDay()]})`; };
@@ -146,12 +150,20 @@ const pkgOptions = (custId, sel, emptyLabel) => `<option value="">${emptyLabel}<
 
 /* ===== 界面状态 ===== */
 const now = new Date();
-const ui = { tab: 'cal', month: new Date(now.getFullYear(), now.getMonth(), 1), sel: today(), custId: null, q: '' };
+const ui = { tab: 'cal', month: new Date(now.getFullYear(), now.getMonth(), 1), sel: today(), custId: null, q: '', prodId: null, pq: '', pcat: '', pOff: false };
 
 function render() {
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === ui.tab));
   $('#title').textContent = db.settings.shop;
-  $('#view').innerHTML = ({ cal: viewCal, cust: () => ui.custId && cust(ui.custId) ? viewCustDetail(cust(ui.custId)) : viewCustList(), sales: viewSales, set: viewSettings })[ui.tab]();
+  const low = db.products.filter(lowStock).length, nb = $('#lowBadge');
+  nb.textContent = low; nb.hidden = !low;
+  $('#view').innerHTML = ({
+    cal: viewCal,
+    cust: () => ui.custId && cust(ui.custId) ? viewCustDetail(cust(ui.custId)) : viewCustList(),
+    sales: viewSales,
+    prod: () => ui.prodId && prod(ui.prodId) ? viewProdDetail(prod(ui.prodId)) : viewProducts(),
+    set: viewSettings
+  })[ui.tab]();
 }
 
 /* ----- 功能 1：预约日历 ----- */
@@ -432,7 +444,7 @@ function saleForm(presetCust) {
   const lines = [];
   let calc;
   const cur = esc(db.settings.currency);
-  const prodOpts = db.products.slice().sort(byName).map(p => `<option value="${p.id}">${esc(p.name)} · ${money(p.price)}${tracked(p) ? (p.stock > 0 ? ` · 库存 ${p.stock}` : ' · 缺货') : ''}</option>`).join('');
+  const prodOpts = db.products.filter(prodActive).sort(byName).map(p => `<option value="${p.id}">${esc(p.name)} · ${money(p.price)}${tracked(p) ? (p.stock > 0 ? ` · 库存 ${p.stock}` : ' · 缺货') : ''}</option>`).join('');
   openSheet('产品零售', `${custField(presetCust, true)}
     <label class="walkin">电话（选填，用于 WhatsApp 收据）<input name="walkPhone" type="tel" autocomplete="off"></label>
     <div class="h2" style="margin-top:4px">购买项目</div>
@@ -452,8 +464,9 @@ function saleForm(presetCust) {
       const short = Object.entries(need).map(([id, q]) => [db.products.find(p => p.id === id), q]).filter(([p, q]) => p && tracked(p) && q > p.stock);
       if (short.length && !confirm(`库存不足：\n${short.map(([p, q]) => `${p.name}（库存 ${p.stock}，需要 ${q}）`).join('\n')}\n仍要继续吗？`)) return false;
       const custId = resolveCust(f);
-      Object.entries(need).forEach(([id, q]) => { const p = db.products.find(x => x.id === id); if (p && tracked(p)) p.stock -= q; });
-      const s = { id: uid(), no: db.settings.receiptNo++, custId, walkName: '', walkPhone: custId ? '' : f.walkPhone.trim(),
+      const no = db.settings.receiptNo++;
+      Object.entries(need).forEach(([id, q]) => { const p = prod(id); if (p && tracked(p)) { p.stock -= q; addMove(p, 'sale', -q, f.date, `收据 #${no}`); } });
+      const s = { id: uid(), no, custId, walkName: '', walkPhone: custId ? '' : f.walkPhone.trim(),
         items: lines.map(l => ({ ...l })), subtotal: c.subtotal, discount: c.discount, total: c.total, method: f.method, received, date: f.date, note: f.note.trim() };
       db.sales.push(s);
       toast('收款完成');
@@ -524,17 +537,146 @@ function saleForm(presetCust) {
       renderLines();
     }, '确认收款');
 }
+/* ----- 产品维护 ----- */
+const MOVE = { init: '初始库存', in: '进货', adjust: '库存调整', sale: '售出', void: '删除单据退回' };
+function addMove(p, type, qty, date, note) {
+  db.stockMoves.push({ id: uid(), prodId: p.id, type, qty, after: p.stock, date, note: note || '', at: Date.now() });
+}
+function prodSales(p) {
+  const out = [];
+  db.sales.forEach(s => s.items.forEach(i => { if (i.prodId === p.id) out.push({ s, i }); }));
+  return out.sort((a, b) => b.s.date.localeCompare(a.s.date) || b.s.no - a.s.no);
+}
+function stockBadge(p) {
+  if (!prodActive(p)) return '<span class="badge off">已下架</span>';
+  if (!tracked(p)) return '<span class="badge off">不追踪库存</span>';
+  if (p.stock <= 0) return `<span class="badge warn">缺货 ${p.stock}</span>`;
+  if (lowStock(p)) return `<span class="badge warn">库存低 ${p.stock}</span>`;
+  return `<span class="badge ok">库存 ${p.stock}</span>`;
+}
+const prodCats = () => [...new Set(db.products.map(p => p.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh'));
+function prodRows() {
+  const q = ui.pq.trim().toLowerCase();
+  const list = db.products.filter(p => (ui.pOff || prodActive(p)) && (!ui.pcat || (p.category || '') === ui.pcat) &&
+      (!q || [p.name, p.sku, p.category].some(v => (v || '').toLowerCase().includes(q))))
+    .sort((a, b) => (prodActive(b) - prodActive(a)) || (lowStock(b) - lowStock(a)) || byName(a, b));
+  if (!list.length) return `<div class="empty">${db.products.length ? '没有符合的产品' : '还没有产品，点击右下角添加'}</div>`;
+  return list.map(p => `<div class="card row" data-act="prodOpen" data-id="${p.id}" role="button" tabindex="0" style="cursor:pointer">
+    <div class="grow"><div class="name">${esc(p.name)}</div><div class="muted">${[p.category, p.sku].filter(Boolean).map(esc).join(' · ') || '未分类'}</div></div>
+    <div style="text-align:right"><div style="font-weight:600">${money(p.price)}</div>${stockBadge(p)}</div></div>`).join('');
+}
+function viewProducts() {
+  const act = db.products.filter(prodActive), off = db.products.length - act.length;
+  const low = act.filter(lowStock).length;
+  const value = act.reduce((s, p) => s + (tracked(p) && typeof p.cost === 'number' && p.stock > 0 ? p.cost * p.stock : 0), 0);
+  const cats = prodCats();
+  if (ui.pcat && !cats.includes(ui.pcat)) ui.pcat = '';
+  return `<div class="stats"><div class="stat"><small>上架产品</small><b>${act.length}</b></div>
+      <div class="stat"><small>库存不足</small><b${low ? ' style="color:var(--warn)"' : ''}>${low}</b></div>
+      <div class="stat"><small>库存成本</small><b>${money(value)}</b></div></div>
+    <input class="search" id="pq" type="search" placeholder="搜索名称、编号或分类…" value="${esc(ui.pq)}">
+    ${cats.length || off ? `<div class="chips">${['', ...cats].map(c => `<button class="chip ${ui.pcat === c ? 'on' : ''}" data-act="pcat" data-c="${esc(c)}">${c ? esc(c) : '全部'}</button>`).join('')}
+      ${off ? `<button class="chip ${ui.pOff ? 'on' : ''}" data-act="pOff">显示已下架（${off}）</button>` : ''}</div>` : ''}
+    <div id="prodList">${prodRows()}</div>
+    <button class="fab" data-act="prodNew">＋ 新产品</button>`;
+}
+function viewProdDetail(p) {
+  const sales = prodSales(p), mon = today().slice(0, 7);
+  const agg = list => list.reduce((a, x) => ({ q: a.q + x.i.qty, v: a.v + x.i.qty * x.i.price }), { q: 0, v: 0 });
+  const m = agg(sales.filter(x => x.s.date.startsWith(mon))), all = agg(sales);
+  const moves = db.stockMoves.filter(x => x.prodId === p.id).sort((a, b) => b.at - a.at).slice(0, 30);
+  const hasCost = typeof p.cost === 'number';
+  const margin = hasCost && p.price > 0 ? `${money(p.price - p.cost)}（${Math.round((p.price - p.cost) / p.price * 100)}%）` : '—';
+  return `<button class="btn small" data-act="prodBack">‹ 产品列表</button>
+    <div class="card" style="margin-top:12px">
+      <div class="row"><div class="grow"><div class="name" style="font-size:19px">${esc(p.name)}</div>
+        <div class="muted">${[p.category, p.sku && 'SKU ' + p.sku].filter(Boolean).map(esc).join(' · ') || '未分类'}</div></div>${stockBadge(p)}</div>
+      <div class="kv"><span>售价</span><b>${money(p.price)}</b>
+        <span>成本价</span><b>${hasCost ? money(p.cost) : '—'}</b>
+        <span>毛利</span><b>${margin}</b>
+        <span>库存</span><b>${tracked(p) ? `${p.stock} 件${typeof p.minStock === 'number' ? `（≤ ${p.minStock} 时提醒）` : ''}` : '不追踪'}</b></div>
+      ${p.notes ? `<div class="muted" style="white-space:pre-wrap">📝 ${esc(p.notes)}</div>` : ''}
+      <div class="btns">
+        ${tracked(p) ? `<button class="btn small primary" data-act="stockIn" data-id="${p.id}">进货</button>
+          <button class="btn small" data-act="stockAdj" data-id="${p.id}">盘点调整</button>` : ''}
+        <button class="btn small" data-act="prodEdit" data-id="${p.id}">编辑</button>
+        <button class="btn small" data-act="prodToggle" data-id="${p.id}">${prodActive(p) ? '下架' : '重新上架'}</button>
+        <button class="btn small danger" data-act="prodDelete" data-id="${p.id}">删除</button></div></div>
+    <div class="stats" style="grid-template-columns:1fr 1fr"><div class="stat"><small>本月售出</small><b>${m.q} 件 · ${money(m.v)}</b></div>
+      <div class="stat"><small>累计售出</small><b>${all.q} 件 · ${money(all.v)}</b></div></div>
+    ${tracked(p) ? `<div class="h2">库存记录</div>${moves.length ? moves.map(x => `<div class="card row"><div class="grow"><div class="name">${MOVE[x.type] || esc(x.type)}</div>
+        <div class="muted">${esc(x.date)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>
+        <div style="text-align:right"><b class="${x.qty < 0 ? 'neg' : 'pos'}">${x.qty > 0 ? '+' : ''}${x.qty}</b><div class="muted">结余 ${x.after}</div></div></div>`).join('')
+      : '<div class="empty">还没有库存记录</div>'}` : ''}
+    <div class="h2">最近销售</div>${sales.length ? sales.slice(0, 10).map(({ s, i }) => `<div class="card row"><div class="grow"><div class="name">${esc(saleCustName(s))}</div>
+        <div class="muted">#${s.no} · ${esc(s.date)}</div></div><div style="white-space:nowrap">${i.qty} × ${money(i.price)}</div></div>`).join('')
+      : '<div class="empty">还没有销售记录</div>'}`;
+}
 function prodForm(p) {
   const isNew = !p;
-  p = p || { name: '', price: '', stock: null };
-  openSheet(isNew ? '添加产品' : '编辑产品', `<label>产品名称<input name="name" value="${esc(p.name)}" required autocomplete="off"></label>
-    <div class="two"><label>售价 (${esc(db.settings.currency)})<input name="price" type="number" min="0" step="0.01" value="${p.price}" required></label>
-      <label>库存数量<input name="stock" type="number" step="1" value="${tracked(p) ? p.stock : ''}" placeholder="留空 = 不追踪"></label></div>`,
+  p = p || { name: '', category: '', sku: '', price: '', cost: null, stock: null, minStock: null, active: true, notes: '' };
+  const wasTracked = tracked(p), cur = esc(db.settings.currency);
+  openSheet(isNew ? '新产品' : '编辑产品', `<label>产品名称<input name="name" value="${esc(p.name)}" required autocomplete="off"></label>
+    <div class="two"><label>分类<input name="category" value="${esc(p.category || '')}" list="catList" autocomplete="off" placeholder="例如 护肤品"></label>
+      <label>编号 / SKU<input name="sku" value="${esc(p.sku || '')}" autocomplete="off" placeholder="选填"></label></div>
+    <datalist id="catList">${prodCats().map(c => `<option value="${esc(c)}">`).join('')}</datalist>
+    <div class="two"><label>售价 (${cur})<input name="price" type="number" min="0" step="0.01" value="${p.price}" required></label>
+      <label>成本价 (${cur})<input name="cost" type="number" min="0" step="0.01" value="${p.cost ?? ''}" placeholder="选填"></label></div>
+    <label class="check-row"><input type="checkbox" name="track" ${wasTracked || isNew ? 'checked' : ''}> 追踪库存</label>
+    <div class="stockbox"><div class="two">
+      ${wasTracked ? `<label>目前库存<input value="${p.stock}" disabled></label>` : `<label>${isNew ? '初始库存' : '目前库存'}<input name="stock" type="number" step="1" value="0"></label>`}
+      <label>低库存提醒（≤）<input name="minStock" type="number" min="0" step="1" value="${p.minStock ?? ''}" placeholder="默认 0"></label></div>
+      ${wasTracked ? '<p class="muted" style="margin:-4px 0 10px">库存数量请在产品页用「进货」或「盘点调整」修改，以保留记录。</p>' : ''}</div>
+    <label class="check-row"><input type="checkbox" name="active" ${prodActive(p) ? 'checked' : ''}> 上架（零售收款时可选择）</label>
+    <label>备注<textarea name="notes" placeholder="成分、用法、供应商…">${esc(p.notes || '')}</textarea></label>`,
     f => {
-      Object.assign(p, { name: f.name.trim(), price: r2(num(f.price)), stock: f.stock.trim() === '' ? null : (parseInt(f.stock) || 0) });
-      if (isNew) { p.id = uid(); db.products.push(p); }
+      const sku = f.sku.trim(), dup = sku && db.products.find(x => x.id !== p.id && (x.sku || '').toLowerCase() === sku.toLowerCase());
+      if (dup && !confirm(`编号「${sku}」已用于产品「${dup.name}」，仍要保存吗？`)) return false;
+      if (wasTracked && !f.track && !confirm('停止追踪库存？目前的库存数量会被清除（库存记录保留）。')) return false;
+      Object.assign(p, { name: f.name.trim(), category: f.category.trim(), sku, price: r2(num(f.price)),
+        cost: f.cost.trim() === '' ? null : r2(num(f.cost)),
+        minStock: !f.minStock || f.minStock.trim() === '' ? null : Math.max(0, parseInt(f.minStock) || 0),
+        active: !!f.active, notes: f.notes.trim() });
+      if (isNew) { p.id = uid(); p.createdAt = Date.now(); p.stock = null; db.products.push(p); ui.prodId = p.id; }
+      if (!f.track) p.stock = null;
+      else if (!wasTracked) { const n = parseInt(f.stock) || 0; p.stock = n; if (n) addMove(p, 'init', n, today(), ''); }
       toast('产品已保存');
-    });
+    },
+    form => { const t = form.elements.track, box = form.querySelector('.stockbox'); const u = () => { box.hidden = !t.checked; }; t.onchange = u; u(); });
+}
+function stockInForm(p) {
+  const cur = esc(db.settings.currency);
+  openSheet(`进货 · ${p.name}`, `<p class="muted" style="margin-top:0">目前库存 ${p.stock} 件</p>
+    <div class="two"><label>进货数量<input name="qty" type="number" min="1" step="1" required></label>
+      <label>单位成本 (${cur})<input name="cost" type="number" min="0" step="0.01" value="${p.cost ?? ''}" placeholder="选填"></label></div>
+    <label class="check-row"><input type="checkbox" name="upd" checked> 同时更新产品成本价</label>
+    <div class="two"><label>供应商<input name="supplier" autocomplete="off" placeholder="选填"></label><label>日期<input name="date" type="date" value="${today()}" required></label></div>
+    <label>备注<input name="note" autocomplete="off"></label>`,
+    f => {
+      const q = parseInt(f.qty) || 0;
+      if (q < 1) { toast('请输入进货数量'); return false; }
+      const cost = f.cost.trim() === '' ? null : r2(num(f.cost));
+      p.stock += q;
+      if (cost !== null && f.upd) p.cost = cost;
+      addMove(p, 'in', q, f.date, [f.supplier.trim(), cost !== null ? `成本 ${money(cost)}` : '', f.note.trim()].filter(Boolean).join(' · '));
+      toast(`已入库 ${q} 件，库存 ${p.stock}`);
+    }, null, '确认进货');
+}
+function stockAdjForm(p) {
+  openSheet(`盘点调整 · ${p.name}`, `<p class="muted" style="margin-top:0">系统库存 ${p.stock} 件</p>
+    <label>实际数量<input name="actual" type="number" step="1" value="${p.stock}" required></label>
+    <div class="two"><label>原因<select name="reason">${['盘点', '损坏', '过期', '店内自用', '赠送', '其他'].map(r => `<option>${r}</option>`).join('')}</select></label>
+      <label>日期<input name="date" type="date" value="${today()}" required></label></div>
+    <label>备注<input name="note" autocomplete="off"></label>`,
+    f => {
+      const actual = parseInt(f.actual);
+      if (!Number.isFinite(actual)) { toast('请输入实际数量'); return false; }
+      const diff = actual - p.stock;
+      if (!diff) { toast('数量没有变化'); return false; }
+      p.stock = actual;
+      addMove(p, 'adjust', diff, f.date, [f.reason, f.note.trim()].filter(Boolean).join(' · '));
+      toast(`库存已调整为 ${actual}`);
+    }, null, '确认调整');
 }
 
 /* ----- 设置 ----- */
@@ -553,12 +695,6 @@ function viewSettings() {
     ${db.catalog.length ? db.catalog.map(t => `<div class="card row"><div class="grow"><div class="name">${esc(t.name)}</div><div class="muted">${t.sessions} 次 · ${money(t.price)}</div></div>
       <button class="btn small" data-act="tplEdit" data-id="${t.id}">编辑</button><button class="btn small danger" data-act="tplDelete" data-id="${t.id}">删除</button></div>`).join('')
       : '<div class="empty">添加常用配套，卖配套时可一键选择</div>'}
-    <div class="h2">零售产品<button class="btn small" data-act="prodNew">＋ 添加</button></div>
-    ${db.products.length ? db.products.slice().sort(byName).map(p => `<div class="card row"><div class="grow"><div class="name">${esc(p.name)}</div>
-        <div class="muted">${money(p.price)} · ${tracked(p) ? `库存 ${p.stock}` : '不追踪库存'}</div></div>
-        ${tracked(p) && p.stock <= 0 ? '<span class="badge warn">缺货</span>' : ''}
-        <button class="btn small" data-act="prodEdit" data-id="${p.id}">编辑</button><button class="btn small danger" data-act="prodDelete" data-id="${p.id}">删除</button></div>`).join('')
-      : '<div class="empty">添加店内销售的美容产品，零售收款时可直接选择</div>'}
     <div class="h2">数据备份</div>
     <div class="card"><p class="muted" style="margin-top:0">所有数据只保存在这台设备的浏览器里。请定期导出备份，清除浏览器数据会导致资料丢失。</p>
       <div class="btns"><button class="btn" data-act="exportData">导出备份</button>
@@ -582,7 +718,7 @@ function tplForm(t) {
 const commit = () => { save(); render(); };
 const appt = id => db.appts.find(a => a.id === id);
 const actions = {
-  tab: d => { ui.tab = d.tab; ui.custId = null; render(); window.scrollTo(0, 0); },
+  tab: d => { ui.tab = d.tab; ui.custId = null; ui.prodId = null; render(); window.scrollTo(0, 0); },
   closeSheet: () => sheet.close(),
   // 日历
   selDate: d => { ui.sel = d.d; render(); },
@@ -638,12 +774,26 @@ const actions = {
   saleDelete: d => {
     const s = db.sales.find(x => x.id === d.id);
     if (!confirm(`确定删除零售记录 #${s.no}（${money(s.total)}）吗？\n有追踪库存的产品会加回库存。删除后无法恢复。`)) return;
-    s.items.forEach(i => { const p = db.products.find(x => x.id === i.prodId); if (p && tracked(p)) p.stock += i.qty; });
+    s.items.forEach(i => { const p = prod(i.prodId); if (p && tracked(p)) { p.stock += i.qty; addMove(p, 'void', i.qty, today(), `删除收据 #${s.no}`); } });
     db.sales = db.sales.filter(x => x.id !== s.id); commit(); toast('已删除');
   },
+  // 产品维护
   prodNew: () => prodForm(),
-  prodEdit: d => prodForm(db.products.find(p => p.id === d.id)),
-  prodDelete: d => { if (confirm('确定删除这个产品吗？（不影响已有的零售记录）')) { db.products = db.products.filter(p => p.id !== d.id); commit(); } },
+  prodOpen: d => { ui.prodId = d.id; render(); window.scrollTo(0, 0); },
+  prodBack: () => { ui.prodId = null; render(); },
+  prodEdit: d => prodForm(prod(d.id)),
+  prodToggle: d => { const p = prod(d.id); p.active = !prodActive(p); commit(); toast(p.active ? '已上架' : '已下架，零售收款时不会显示'); },
+  prodDelete: d => {
+    const p = prod(d.id), sold = prodSales(p).length;
+    if (!confirm(`确定删除产品「${p.name}」吗？${sold ? `\n它有 ${sold} 笔销售记录（销售记录会保留）。如果只是不再销售，建议改用「下架」。` : ''}\n该产品的库存记录将一并删除，无法恢复。`)) return;
+    db.products = db.products.filter(x => x.id !== p.id);
+    db.stockMoves = db.stockMoves.filter(x => x.prodId !== p.id);
+    ui.prodId = null; commit(); toast('产品已删除');
+  },
+  stockIn: d => stockInForm(prod(d.id)),
+  stockAdj: d => stockAdjForm(prod(d.id)),
+  pcat: d => { ui.pcat = d.c; render(); },
+  pOff: () => { ui.pOff = !ui.pOff; render(); },
   // 设置
   tplNew: () => tplForm(),
   tplEdit: d => tplForm(db.catalog.find(t => t.id === d.id)),
@@ -665,6 +815,7 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('input', e => {
   if (e.target.id === 'q') { ui.q = e.target.value; $('#custList').innerHTML = custRows(); }
+  if (e.target.id === 'pq') { ui.pq = e.target.value; $('#prodList').innerHTML = prodRows(); }
 });
 document.addEventListener('submit', e => {
   if (e.target.id !== 'setForm') return;
