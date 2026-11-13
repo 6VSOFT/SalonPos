@@ -122,6 +122,13 @@ label.check-row input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; }
 .neg { color: var(--danger); }
 .pos { color: var(--ok); }
 
+/* google sheet sync */
+.sync-status { margin: 0 0 12px; font-size: 14px; }
+details.steps { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+details.steps summary { cursor: pointer; font-size: 14px; color: var(--accent); font-weight: 600; }
+details.steps ol { padding-left: 20px; font-size: 14px; margin: 8px 0; }
+details.steps li { margin-bottom: 4px; }
+
 /* login */
 #login { display: none; }
 body.locked { padding-bottom: 0; }

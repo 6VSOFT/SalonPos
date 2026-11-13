@@ -24,6 +24,7 @@ let db = load();
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(db)); }
   catch (e) { alert('保存失败：' + e.message); }
+  if (typeof scheduleSync === 'function') scheduleSync();
 }
 
 /* ===== 工具 ===== */
@@ -695,8 +696,25 @@ function viewSettings() {
     ${db.catalog.length ? db.catalog.map(t => `<div class="card row"><div class="grow"><div class="name">${esc(t.name)}</div><div class="muted">${t.sessions} 次 · ${money(t.price)}</div></div>
       <button class="btn small" data-act="tplEdit" data-id="${t.id}">编辑</button><button class="btn small danger" data-act="tplDelete" data-id="${t.id}">删除</button></div>`).join('')
       : '<div class="empty">添加常用配套，卖配套时可一键选择</div>'}
+    <div class="h2">Google Sheet 同步</div>
+    <form class="card" id="syncForm">
+      <p id="syncStatus" class="sync-status">${syncStatusHtml()}</p>
+      <label>Apps Script 网址<input name="url" type="url" value="${esc(sync.url)}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
+      <label>同步密钥<input name="token" value="${esc(sync.token)}" autocomplete="off" spellcheck="false"></label>
+      <label class="check-row"><input type="checkbox" name="auto" ${sync.auto ? 'checked' : ''}> 资料有变动时自动同步</label>
+      <div class="btns"><button class="btn primary">保存并连接</button>
+        ${sync.url ? `<button type="button" class="btn" data-act="syncNow">立即同步</button><button type="button" class="btn" data-act="syncRestore">从 Google Sheet 还原</button>` : ''}</div>
+      <details class="steps"><summary>第一次设置步骤</summary>
+        <ol><li>在 Google Drive 的 SaPos 文件夹打开表格「SalonPos 数据」。</li>
+          <li>点选 扩展程序 → Apps Script，删除原有内容。</li>
+          <li>回到这里点「复制 Apps Script 代码」，贴到 Apps Script 并保存。</li>
+          <li>点 部署 → 新部署 → 类型选「网页应用」，执行身份选「我」，访问权限选「任何人」，然后部署并授权。</li>
+          <li>复制「网页应用」网址，贴到上面的 Apps Script 网址，点「保存并连接」。</li></ol>
+        <p class="muted">其他设备要同步同一份表格：填入相同的网址和同步密钥即可。同步密钥等于这份资料的钥匙，不要分享给别人。</p>
+        <button type="button" class="btn" data-act="copyGas">复制 Apps Script 代码</button></details>
+    </form>
     <div class="h2">数据备份</div>
-    <div class="card"><p class="muted" style="margin-top:0">所有数据只保存在这台设备的浏览器里。请定期导出备份，清除浏览器数据会导致资料丢失。</p>
+    <div class="card"><p class="muted" style="margin-top:0">资料保存在这台设备的浏览器里${sync.url ? '，并同步到 Google Sheet' : '。未开启 Google Sheet 同步时，清除浏览器数据会导致资料丢失'}。也可以导出备份文件另外保存。</p>
       <div class="btns"><button class="btn" data-act="exportData">导出备份</button>
         <button class="btn" data-act="importData">导入备份</button><input type="file" id="importFile" accept="application/json,.json" hidden></div></div>
     <div class="h2">账户</div>
@@ -831,11 +849,126 @@ document.addEventListener('change', async e => {
     if (!d || !Array.isArray(d.customers) || !Array.isArray(d.packages)) throw new Error('不是有效的备份文件');
     if (!confirm(`备份包含 ${d.customers.length} 位顾客。\n导入将覆盖本机现有的全部数据，确定吗？`)) return;
     localStorage.setItem(KEY, JSON.stringify(d));
-    db = load(); ui.custId = null; render(); toast('导入成功');
+    db = load(); ui.custId = null; ui.prodId = null; save(); render(); toast('导入成功');
   } catch (err) { alert('导入失败：' + err.message); }
 });
 // 点击背景关闭弹窗
 sheet.addEventListener('click', e => { if (e.target === sheet) sheet.close(); });
+
+/* ===== Google Sheet 同步 ===== */
+// 同步设置只存在这台设备（不放进资料与备份文件）
+const SYNC_KEY = 'salonpos.sync';
+const newToken = () => [...crypto.getRandomValues(new Uint8Array(18))].map(b => b.toString(16).padStart(2, '0')).join('');
+let sync = (() => {
+  let s = {};
+  try { s = JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch {}
+  return { url: '', token: '', auto: true, lastAt: '', lastErr: '', dirty: false, ...s };
+})();
+if (!sync.token) sync.token = newToken();
+function saveSync() { try { localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); } catch {} }
+saveSync();
+const isEmptyDb = d => ['customers', 'packages', 'payments', 'appts', 'products', 'sales', 'catalog'].every(k => !(d && d[k] && d[k].length));
+const fmtTime = t => { const d = new Date(t); return isNaN(d) ? String(t) : `${iso(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+let syncing = false, syncTimer;
+function syncStatusHtml() {
+  if (!sync.url) return '<span class="muted">尚未连接。设置后，资料会自动保存到 Google Drive 的「SalonPos 数据」表格。</span>';
+  if (syncing) return '⏳ 同步中…';
+  if (sync.lastErr) return `<span class="neg">⚠️ 同步失败：${esc(sync.lastErr)}</span>`;
+  if (sync.dirty) return '⏳ 有资料等待同步';
+  return sync.lastAt ? `<span class="pos">✓ 已同步</span> <span class="muted">${fmtTime(sync.lastAt)}</span>` : '<span class="muted">已设置，尚未同步</span>';
+}
+function updSyncUI() { const el = $('#syncStatus'); if (el) el.innerHTML = syncStatusHtml(); }
+async function callSheet(action, extra = {}) {
+  let res;
+  try {
+    res = await fetch(sync.url, { method: 'POST', body: JSON.stringify({ token: sync.token, action, ...extra }) });
+  } catch { throw new Error('无法连接 Google（请检查网络或 Apps Script 网址）'); }
+  let j;
+  try { j = await res.json(); } catch { throw new Error('Apps Script 回应不正确，请确认已部署为「网页应用」且访问权限为「任何人」'); }
+  if (!j.ok) { const err = new Error(j.error || '未知错误'); err.code = j.code; throw err; }
+  return j;
+}
+function scheduleSync() {
+  if (!sync.url) return;
+  sync.dirty = true; saveSync(); updSyncUI();
+  if (!sync.auto) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => pushSync(), 3000);
+}
+async function pushSync(opts = {}) {
+  if (!sync.url) return;
+  if (syncing) { clearTimeout(syncTimer); syncTimer = setTimeout(() => pushSync(opts), 2000); return; }
+  if (!navigator.onLine) { if (opts.manual) toast('目前离线，恢复网络后会自动同步'); return; }
+  syncing = true; updSyncUI();
+  const hadErr = !!sync.lastErr;
+  try {
+    const j = await callSheet('save', { data: db, force: !!opts.force });
+    Object.assign(sync, { lastAt: j.savedAt, lastErr: '', dirty: false });
+    if (opts.manual) toast('已同步到 Google Sheet');
+  } catch (e) {
+    sync.lastErr = e.message;
+    if (opts.manual || !hadErr) toast('Google Sheet 同步失败：' + e.message);
+  } finally { syncing = false; saveSync(); updSyncUI(); }
+}
+function applyRemote(r) {
+  localStorage.setItem(KEY, JSON.stringify(r.data));
+  db = load();
+  Object.assign(sync, { dirty: false, lastErr: '', lastAt: r.savedAt || sync.lastAt });
+  saveSync(); ui.custId = null; ui.prodId = null; render();
+  toast('已从 Google Sheet 载入资料');
+}
+const remoteSummary = r => `Google Sheet 的资料（${r.savedAt ? fmtTime(r.savedAt) + ' 保存，' : ''}${r.data.customers?.length || 0} 位顾客、${(r.data.payments?.length || 0) + (r.data.sales?.length || 0)} 笔收款）`;
+/* 连接后：比对本机与表格，决定由哪边为准 */
+async function connectSync() {
+  toast('正在连接 Google Sheet…');
+  let r;
+  try { r = await callSheet('load'); }
+  catch (e) { sync.lastErr = e.message; saveSync(); updSyncUI(); alert('连接失败：' + e.message); return; }
+  sync.lastErr = ''; saveSync();
+  const hasRemote = r.data && !isEmptyDb(r.data);
+  if (!hasRemote) return pushSync({ manual: true });
+  if (isEmptyDb(db)) {
+    if (confirm(`${remoteSummary(r)}\n\n这台设备还没有资料，要载入 Google Sheet 的资料吗？`)) applyRemote(r);
+    return;
+  }
+  openSheet('两边都有资料', `<p>${esc(remoteSummary(r))}，这台设备也有资料（${db.customers.length} 位顾客、${db.payments.length + db.sales.length} 笔收款）。</p>
+    <p>请选择以哪一边为准，另一边会被覆盖：</p>
+    <div class="btns" style="flex-direction:column;align-items:stretch;margin-bottom:12px">
+      <button type="button" class="btn primary" id="useRemote">载入 Google Sheet 的资料到这台设备</button>
+      <button type="button" class="btn" id="useLocal">用这台设备的资料覆盖 Google Sheet</button>
+      <button type="button" class="btn" data-act="closeSheet">暂不同步</button></div>`, null, form => {
+    form.querySelector('#useRemote').onclick = () => { sheet.close(); applyRemote(r); };
+    form.querySelector('#useLocal').onclick = () => { sheet.close(); pushSync({ manual: true, force: true }); };
+  });
+}
+window.addEventListener('online', () => { if (sync.url && sync.dirty) pushSync(); });
+actions.syncNow = () => pushSync({ manual: true });
+actions.syncRestore = async () => {
+  let r;
+  try { r = await callSheet('load'); } catch (e) { alert('读取失败：' + e.message); return; }
+  if (!r.data) { alert('Google Sheet 里还没有备份资料'); return; }
+  if (confirm(`${remoteSummary(r)}\n\n用它覆盖这台设备上的全部资料吗？本机未同步的变动会丢失。`)) applyRemote(r);
+};
+actions.copyGas = async () => {
+  const token = ($('#syncForm')?.elements.token.value || sync.token).trim();
+  try {
+    const code = (await (await fetch('gas/Code.gs', { cache: 'no-store' })).text()).replace('__TOKEN__', token);
+    await navigator.clipboard.writeText(code);
+    toast('已复制，请贴到 Apps Script');
+  } catch (e) { alert('复制失败：' + e.message); }
+};
+document.addEventListener('submit', e => {
+  if (e.target.id !== 'syncForm') return;
+  e.preventDefault();
+  const f = e.target.elements, url = f.url.value.trim(), token = f.token.value.trim();
+  if (url && !/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) { alert('网址应以 https://script.google.com/ 开头'); return; }
+  if (!token) { alert('请填写同步密钥'); return; }
+  const changed = url !== sync.url || token !== sync.token;
+  Object.assign(sync, { url, token, auto: f.auto.checked });
+  if (changed) Object.assign(sync, { lastAt: '', lastErr: '' });
+  saveSync(); render();
+  if (url) connectSync(); else toast('已停用 Google Sheet 同步');
+});
 
 /* ===== 登入 ===== */
 // 只保存 "salonpos|<小写ID>|<密码>" 的 SHA-256，代码中不出现明文凭据
@@ -848,7 +981,10 @@ async function sha256(s) {
 function isAuthed() {
   try { return localStorage.getItem(AUTH_KEY) === AUTH_HASH || sessionStorage.getItem(AUTH_KEY) === AUTH_HASH; } catch { return false; }
 }
-function unlock() { document.body.classList.remove('locked'); render(); }
+function unlock() {
+  document.body.classList.remove('locked'); render();
+  if (sync.url && sync.dirty) pushSync();
+}
 let loginFails = 0;
 $('#loginForm').addEventListener('submit', async e => {
   e.preventDefault();
