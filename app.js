@@ -402,7 +402,9 @@ function viewSettings() {
     <div class="h2">数据备份</div>
     <div class="card"><p class="muted" style="margin-top:0">所有数据只保存在这台设备的浏览器里。请定期导出备份，清除浏览器数据会导致资料丢失。</p>
       <div class="btns"><button class="btn" data-act="exportData">导出备份</button>
-        <button class="btn" data-act="importData">导入备份</button><input type="file" id="importFile" accept="application/json,.json" hidden></div></div>`;
+        <button class="btn" data-act="importData">导入备份</button><input type="file" id="importFile" accept="application/json,.json" hidden></div></div>
+    <div class="h2">账户</div>
+    <div class="card"><button class="btn danger" data-act="logout">登出</button></div>`;
 }
 function tplForm(t) {
   const isNew = !t;
@@ -511,5 +513,44 @@ document.addEventListener('change', async e => {
 // 点击背景关闭弹窗
 sheet.addEventListener('click', e => { if (e.target === sheet) sheet.close(); });
 
-render();
+/* ===== 登入 ===== */
+// 只保存 "salonpos|<小写ID>|<密码>" 的 SHA-256，代码中不出现明文凭据
+const AUTH_HASH = 'a045df4830d0aaecbe67b0cabbbcfb245baf2e7b8a463cea9144d7da44474098';
+const AUTH_KEY = 'salonpos.auth';
+async function sha256(s) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function isAuthed() {
+  try { return localStorage.getItem(AUTH_KEY) === AUTH_HASH || sessionStorage.getItem(AUTH_KEY) === AUTH_HASH; } catch { return false; }
+}
+function unlock() { document.body.classList.remove('locked'); render(); }
+let loginFails = 0;
+$('#loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = e.target, err = $('#loginErr'), btn = f.querySelector('button');
+  btn.disabled = true; err.textContent = '';
+  try {
+    const h = await sha256(`salonpos|${f.id.value.trim().toLowerCase()}|${f.pw.value}`);
+    if (h !== AUTH_HASH) {
+      loginFails++;
+      await new Promise(r => setTimeout(r, Math.min(5000, 400 * loginFails)));
+      err.textContent = '登入 ID 或密码不正确';
+      f.pw.value = ''; f.pw.focus();
+      return;
+    }
+    (f.remember.checked ? localStorage : sessionStorage).setItem(AUTH_KEY, h);
+    f.reset(); loginFails = 0; unlock();
+  } catch (ex) {
+    err.textContent = '无法登入：' + ex.message;
+  } finally { btn.disabled = false; }
+});
+actions.logout = () => {
+  if (!confirm('确定要登出吗？')) return;
+  try { localStorage.removeItem(AUTH_KEY); sessionStorage.removeItem(AUTH_KEY); } catch {}
+  sheet.close(); ui.tab = 'cal'; ui.custId = null;
+  document.body.classList.add('locked');
+};
+
+if (isAuthed()) unlock();
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(console.error);

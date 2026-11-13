@@ -90,5 +90,20 @@ dialog .body { padding: 8px 16px; overflow-y: auto; }
 dialog footer { display: flex; gap: 10px; justify-content: flex-end; padding: 10px 16px calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 pre.receipt { background: var(--card); border: 1px dashed var(--line); border-radius: 12px; padding: 14px; white-space: pre-wrap; word-break: break-word; font: 14px/1.6 ui-monospace, Consolas, "Microsoft YaHei", monospace; margin: 0 0 12px; }
 
+/* login */
+#login { display: none; }
+body.locked { padding-bottom: 0; }
+body.locked > :not(#login):not(#toast):not(script) { display: none !important; }
+body.locked #login { display: flex; min-height: 100dvh; align-items: center; justify-content: center; padding: 24px 16px; background: linear-gradient(160deg, var(--accent-soft), var(--bg) 60%); }
+.login-card { width: 100%; max-width: 360px; background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 28px 22px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,.08); }
+.login-card img { border-radius: 18px; }
+.login-card h1 { margin: 10px 0 2px; font-size: 22px; }
+.login-card .muted { margin: 0 0 18px; }
+.login-card label { text-align: left; }
+.login-card label.check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; }
+.login-card label.check input { width: auto; margin: 0; }
+.login-card .btn { width: 100%; padding: 12px; font-size: 16px; }
+.err { color: var(--danger); font-size: 14px; min-height: 1.4em; margin: 0 0 8px; }
+
 #toast { position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 20px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 99; max-width: 90vw; }
 #toast.show { opacity: 1; }

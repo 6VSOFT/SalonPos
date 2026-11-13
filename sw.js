@@ -1,5 +1,5 @@
 // 网络优先，离线时回退到缓存
-const CACHE = 'salonpos-v1';
+const CACHE = 'salonpos-v2';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {

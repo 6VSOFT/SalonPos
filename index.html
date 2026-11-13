@@ -11,7 +11,19 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="locked">
+<section id="login">
+  <form id="loginForm" class="login-card">
+    <img src="icons/icon-192.png" alt="" width="72" height="72">
+    <h1>美容院 POS</h1>
+    <p class="muted">请登入以继续</p>
+    <label>登入 ID<input name="id" type="email" autocomplete="username" required autofocus></label>
+    <label>密码<input name="pw" type="password" autocomplete="current-password" required></label>
+    <label class="check"><input name="remember" type="checkbox" checked> 在这台设备保持登入</label>
+    <p id="loginErr" class="err" role="alert"></p>
+    <button class="btn primary" type="submit">登入</button>
+  </form>
+</section>
 <header class="top"><h1 id="title">美容院 POS</h1></header>
 <main id="view"></main>
 <nav class="tabs">
