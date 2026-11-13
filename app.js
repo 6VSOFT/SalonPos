@@ -334,7 +334,7 @@ function sellForm(presetCust) {
     <label>配套名称<input name="name" required autocomplete="off" placeholder="例如 脸部护理 10 次"></label>
     <div class="two"><label>次数<input name="sessions" type="number" min="1" step="1" value="10" required></label>
       <label>配套价格 (${esc(db.settings.currency)})<input name="price" type="number" min="0" step="0.01" required></label></div>
-    <div class="two"><label>本次收款 (${esc(db.settings.currency)})<input name="amount" type="number" min="0" step="0.01" placeholder="0 = 暂未付款"></label>${methodField}</div>
+    <div class="two"><label>本次收款 (${esc(db.settings.currency)})<input name="amount" type="number" min="0" step="0.01" value="0"></label>${methodField}</div>
     <label>日期<input name="date" type="date" value="${today()}" required></label>`,
     f => {
       const price = num(f.price), amount = num(f.amount);
@@ -349,7 +349,7 @@ function sellForm(presetCust) {
       wireCustField(form);
       if (form.elements.tpl) form.elements.tpl.onchange = e => {
         const t = db.catalog.find(x => x.id === e.target.value); if (!t) return;
-        form.elements.name.value = t.name; form.elements.sessions.value = t.sessions; form.elements.price.value = t.price; form.elements.amount.value = t.price;
+        form.elements.name.value = t.name; form.elements.sessions.value = t.sessions; form.elements.price.value = t.price;
       };
     }, '确认');
 }
