@@ -8,7 +8,9 @@ const DEFAULTS = {
   packages: [],   // 顾客购买的配套 {id,custId,name,sessions,price,date}
   payments: [],   // {id,no,custId,pkgId,amount,method,date,note}
   usages: [],     // 扣次记录 {id,pkgId,custId,date,note,apptId}
-  appts: []       // {id,custId,date,time,dur,service,pkgId,status,notes}
+  appts: [],      // {id,custId,date,time,dur,service,pkgId,status,notes}
+  products: [],   // 零售产品 {id,name,price,stock(null=不追踪)}
+  sales: []       // 零售单 {id,no,custId,walkName,walkPhone,items[{prodId,name,price,qty}],subtotal,discount,total,method,received,date,note}
 };
 function load() {
   try {
@@ -31,6 +33,8 @@ const pad = n => String(n).padStart(2, '0');
 const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const today = () => iso(new Date());
 const num = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+const r2 = n => Math.round(n * 100) / 100;
+const tracked = p => typeof p.stock === 'number';
 const money = n => `${db.settings.currency} ${num(n).toFixed(2)}`;
 const WD = ['日', '一', '二', '三', '四', '五', '六'];
 const fmtDate = s => { const d = new Date(s + 'T00:00'); return `${s} (周${WD[d.getDay()]})`; };
@@ -120,9 +124,9 @@ function openSheet(title, html, onSubmit, onOpen, submitLabel = '保存') {
   if (onOpen) onOpen(form);
   if (!sheet.open) sheet.showModal();
 }
-function custField(sel) {
+function custField(sel, walkin) {
   const opts = db.customers.slice().sort(byName).map(c => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}　${esc(c.phone)}</option>`).join('');
-  return `<label>顾客<select name="custId" required><option value="">— 选择顾客 —</option>${opts}<option value="__new">＋ 新顾客</option></select></label>
+  return `<label>顾客<select name="custId" ${walkin ? '' : 'required'}><option value="">${walkin ? 'Walk-in 散客（不记录顾客）' : '— 选择顾客 —'}</option>${opts}<option value="__new">＋ 新顾客</option></select></label>
     <div class="two newcust" hidden><label>新顾客姓名<input name="newName" autocomplete="off"></label><label>电话<input name="newPhone" type="tel" autocomplete="off"></label></div>`;
 }
 function wireCustField(form, onChange) {
@@ -272,7 +276,6 @@ function viewCustDetail(c) {
   const ap = db.appts.filter(a => a.custId === c.id).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
   const up = ap.filter(a => a.status === 'booked' && a.date >= today()).reverse();
   const past = ap.filter(a => !up.includes(a)).slice(0, 10);
-  const pays = db.payments.filter(x => x.custId === c.id).sort((a, b) => b.date.localeCompare(a.date) || b.no - a.no);
   return `<button class="btn small" data-act="custBack">‹ 顾客列表</button>
     <div class="card" style="margin-top:12px">
       <div class="row"><div class="grow"><div class="name" style="font-size:19px">${esc(c.name)}</div>
@@ -280,6 +283,7 @@ function viewCustDetail(c) {
         <div style="text-align:right"><span class="badge">剩 ${custRemain(c.id)} 次</span>${custBalance(c.id) > 0 ? `<br><span class="badge warn">欠 ${money(custBalance(c.id))}</span>` : ''}</div></div>
       ${c.notes ? `<div class="muted" style="margin-top:6px;white-space:pre-wrap">📝 ${esc(c.notes)}</div>` : ''}
       <div class="btns"><button class="btn small primary" data-act="pkgSell" data-id="${c.id}">卖配套</button>
+        <button class="btn small" data-act="saleNew" data-id="${c.id}">买产品</button>
         <button class="btn small" data-act="apptNew" data-id="${c.id}">新预约</button>
         ${c.phone ? `<button class="btn small wa" data-act="custWa" data-id="${c.id}">WhatsApp</button>` : ''}
         <button class="btn small" data-act="custEdit" data-id="${c.id}">编辑</button>
@@ -287,7 +291,7 @@ function viewCustDetail(c) {
     <div class="h2">配套（${pk.length}）</div>${pk.length ? pk.map(p => pkgCard(p)).join('') : '<div class="empty">尚未购买配套</div>'}
     <div class="h2">即将到来的预约</div>${up.length ? up.map(a => apptCard(a, true)).join('') : '<div class="empty">没有预约</div>'}
     ${past.length ? `<div class="h2">过往预约</div>${past.map(a => apptCard(a, true)).join('')}` : ''}
-    <div class="h2">付款记录</div>${pays.length ? pays.map(x => payRow(x)).join('') : '<div class="empty">没有付款记录</div>'}`;
+    <div class="h2">收款记录</div>${txList(t => t.custId === c.id)}`;
 }
 function custForm(c) {
   const isNew = !c;
@@ -369,18 +373,168 @@ function historySheet(p) {
 }
 function viewSales() {
   const t = today(), mon = t.slice(0, 7);
-  const sum = f => db.payments.filter(f).reduce((s, x) => s + x.amount, 0);
+  const tx = allTx();
+  const sum = f => tx.filter(f).reduce((s, x) => s + x.amount, 0);
+  const byMethod = {};
+  tx.filter(x => x.date === t).forEach(x => { byMethod[x.method] = r2((byMethod[x.method] || 0) + x.amount); });
   const active = db.packages.filter(p => cust(p.custId) && (pkgRemain(p) > 0 || pkgBalance(p) > 0))
     .sort((a, b) => pkgBalance(b) - pkgBalance(a) || byName(cust(a.custId), cust(b.custId)));
   const owed = active.reduce((s, p) => s + Math.max(0, pkgBalance(p)), 0);
-  const pays = db.payments.slice().sort((a, b) => b.date.localeCompare(a.date) || b.no - a.no).slice(0, 30);
-  return `<div class="stats"><div class="stat"><small>今日收款</small><b>${money(sum(x => x.date === t))}</b></div>
+  return `<div class="btns" style="margin:0 0 12px"><button class="btn primary" data-act="saleNew">＋ 产品零售</button><button class="btn" data-act="pkgSell">＋ 卖配套</button></div>
+    <div class="stats"><div class="stat"><small>今日收款</small><b>${money(sum(x => x.date === t))}</b></div>
       <div class="stat"><small>本月收款</small><b>${money(sum(x => x.date.startsWith(mon)))}</b></div>
       <div class="stat"><small>顾客欠款</small><b>${money(owed)}</b></div></div>
+    ${Object.keys(byMethod).length ? `<div class="method-sum">今日：${Object.entries(byMethod).map(([m, a]) => `${esc(m)} ${money(a)}`).join(' · ')}</div>` : ''}
     <div class="h2">未完成配套（${active.length}）<span class="muted">共剩 ${active.reduce((s, p) => s + Math.max(0, pkgRemain(p)), 0)} 次</span></div>
     ${active.length ? active.map(p => pkgCard(p, true)).join('') : '<div class="empty">没有未用完或未付清的配套</div>'}
-    <div class="h2">最近付款</div>${pays.length ? pays.map(x => payRow(x, true)).join('') : '<div class="empty">没有付款记录</div>'}
-    <button class="fab" data-act="pkgSell">＋ 卖配套</button>`;
+    <div class="h2">最近收款</div>${txList(() => true, true, 40)}`;
+}
+
+/* ----- 产品零售（Walk-in 单次购买） ----- */
+function allTx() {
+  return [
+    ...db.payments.map(x => ({ kind: 'pay', rec: x, no: x.no, date: x.date, method: x.method, amount: x.amount, custId: x.custId })),
+    ...db.sales.map(x => ({ kind: 'sale', rec: x, no: x.no, date: x.date, method: x.method, amount: x.total, custId: x.custId }))
+  ].sort((a, b) => b.date.localeCompare(a.date) || b.no - a.no);
+}
+function txList(filter, showCust, limit = Infinity) {
+  const list = allTx().filter(filter).slice(0, limit);
+  return list.length ? list.map(t => t.kind === 'pay' ? payRow(t.rec, showCust) : saleRow(t.rec, showCust)).join('')
+    : '<div class="empty">没有收款记录</div>';
+}
+function saleCustName(s) {
+  const c = s.custId && cust(s.custId);
+  return c ? c.name : (s.walkName ? `${s.walkName}（散客）` : 'Walk-in 散客');
+}
+function saleText(s) {
+  const st = db.settings, L = [`*${st.shop}*`];
+  if (st.address) L.push(st.address);
+  if (st.phone) L.push(`电话: ${st.phone}`);
+  L.push('──────────────', `*收据 Receipt* #${s.no}`, `日期: ${s.date}`, `顾客: ${saleCustName(s)}`, '──────────────');
+  s.items.forEach(i => L.push(i.name, `  ${i.qty} x ${money(i.price)} = ${money(i.qty * i.price)}`));
+  L.push('──────────────');
+  if (s.discount > 0) L.push(`小计: ${money(s.subtotal)}`, `折扣: -${money(s.discount)}`);
+  L.push(`*总额: ${money(s.total)}* (${s.method})`);
+  if (s.received > 0) L.push(`收到: ${money(s.received)}`, `找零: ${money(s.received - s.total)}`);
+  if (s.note) L.push(`备注: ${s.note}`);
+  L.push('──────────────', st.footer);
+  return L.join('\n');
+}
+const showSaleReceipt = s => msgSheet(`收据 #${s.no}`, (s.custId && cust(s.custId)?.phone) || s.walkPhone, saleText(s));
+function saleRow(s, showCust) {
+  const items = s.items.map(i => i.qty > 1 ? `${i.name}×${i.qty}` : i.name).join('、');
+  return `<div class="card row"><div class="grow"><div class="name">${showCust ? esc(saleCustName(s)) + ' · ' : ''}${money(s.total)}</div>
+    <div class="muted">#${s.no} · ${esc(s.date)} · ${esc(s.method)} · 🛍 ${esc(items)}</div></div>
+    <button class="btn small wa" data-act="saleReceipt" data-id="${s.id}">收据</button>
+    <button class="btn small danger" data-act="saleDelete" data-id="${s.id}" aria-label="删除零售记录">✕</button></div>`;
+}
+function saleForm(presetCust) {
+  const lines = [];
+  let calc;
+  const cur = esc(db.settings.currency);
+  const prodOpts = db.products.slice().sort(byName).map(p => `<option value="${p.id}">${esc(p.name)} · ${money(p.price)}${tracked(p) ? (p.stock > 0 ? ` · 库存 ${p.stock}` : ' · 缺货') : ''}</option>`).join('');
+  openSheet('产品零售', `${custField(presetCust, true)}
+    <label class="walkin">电话（选填，用于 WhatsApp 收据）<input name="walkPhone" type="tel" autocomplete="off"></label>
+    <div class="h2" style="margin-top:4px">购买项目</div>
+    <div id="lines"></div>
+    <label>加入项目<select id="pick"><option value="">— 选择产品 —</option>${prodOpts}<option value="__custom">＋ 自定义项目</option></select></label>
+    <div class="custom-row" hidden><input id="cName" placeholder="项目名称" autocomplete="off"><input id="cPrice" type="number" min="0" step="0.01" placeholder="单价"><button type="button" class="btn" id="cAdd">加入</button></div>
+    <div class="two"><label>折扣 (${cur})<input name="discount" type="number" min="0" step="0.01" placeholder="0"></label>${methodField}</div>
+    <div class="card totals" id="totals"></div>
+    <label class="cashbox">收到现金 (${cur})<input name="received" type="number" min="0" step="0.01" placeholder="选填，用于计算找零"></label>
+    <div class="two"><label>日期<input name="date" type="date" value="${today()}" required></label><label>备注<input name="note" autocomplete="off"></label></div>`,
+    f => {
+      if (!lines.length) { toast('请先加入购买项目'); return false; }
+      const c = calc(), received = f.method === '现金' ? r2(c.received) : 0;
+      if (received > 0 && received < c.total) { toast('收到的现金少于应收金额'); return false; }
+      const need = {};
+      lines.forEach(l => { if (l.prodId) need[l.prodId] = (need[l.prodId] || 0) + l.qty; });
+      const short = Object.entries(need).map(([id, q]) => [db.products.find(p => p.id === id), q]).filter(([p, q]) => p && tracked(p) && q > p.stock);
+      if (short.length && !confirm(`库存不足：\n${short.map(([p, q]) => `${p.name}（库存 ${p.stock}，需要 ${q}）`).join('\n')}\n仍要继续吗？`)) return false;
+      const custId = resolveCust(f);
+      Object.entries(need).forEach(([id, q]) => { const p = db.products.find(x => x.id === id); if (p && tracked(p)) p.stock -= q; });
+      const s = { id: uid(), no: db.settings.receiptNo++, custId, walkName: '', walkPhone: custId ? '' : f.walkPhone.trim(),
+        items: lines.map(l => ({ ...l })), subtotal: c.subtotal, discount: c.discount, total: c.total, method: f.method, received, date: f.date, note: f.note.trim() };
+      db.sales.push(s);
+      toast('收款完成');
+      return () => showSaleReceipt(s);
+    },
+    form => {
+      const E = form.elements, linesEl = form.querySelector('#lines'), pick = form.querySelector('#pick'), customRow = form.querySelector('.custom-row');
+      calc = () => {
+        const subtotal = r2(lines.reduce((s, l) => s + l.price * l.qty, 0));
+        const discount = r2(Math.min(subtotal, Math.max(0, num(E.discount.value))));
+        return { subtotal, discount, total: r2(subtotal - discount), received: num(E.received.value) };
+      };
+      const updTotals = () => {
+        const c = calc(), cash = E.method.value === '现金';
+        form.querySelector('.cashbox').hidden = !cash;
+        form.querySelector('#totals').innerHTML = `
+          <div class="row"><span class="grow">小计（${lines.reduce((s, l) => s + l.qty, 0)} 件）</span><span>${money(c.subtotal)}</span></div>
+          ${c.discount > 0 ? `<div class="row"><span class="grow">折扣</span><span>-${money(c.discount)}</span></div>` : ''}
+          <div class="row grand"><span class="grow">应收</span><span>${money(c.total)}</span></div>
+          ${cash && c.received > 0 ? `<div class="row ${c.received < c.total ? 'neg' : ''}"><span class="grow">${c.received < c.total ? '还差' : '找零'}</span><span>${money(Math.abs(c.received - c.total))}</span></div>` : ''}`;
+      };
+      const renderLines = () => {
+        linesEl.innerHTML = lines.length ? lines.map((l, i) => `<div class="line">
+          <div class="row"><span class="grow name">${esc(l.name)}</span><button type="button" class="x" data-rm="${i}" aria-label="移除">✕</button></div>
+          <div class="ctl"><div class="qty"><button type="button" data-q="${i}" data-d="-1" aria-label="减少">−</button><input data-qi="${i}" type="number" min="1" step="1" value="${l.qty}" inputmode="numeric" aria-label="数量"><button type="button" data-q="${i}" data-d="1" aria-label="增加">＋</button></div>
+            <span class="muted">×</span><input class="price" data-pi="${i}" type="number" min="0" step="0.01" value="${l.price}" aria-label="单价"><span class="sum" data-si="${i}">${money(l.qty * l.price)}</span></div></div>`).join('')
+          : '<div class="empty" style="padding:12px">还没有加入项目</div>';
+        updTotals();
+      };
+      const add = (name, price, prodId) => {
+        const ex = prodId && lines.find(l => l.prodId === prodId);
+        if (ex) ex.qty++; else lines.push({ prodId: prodId || '', name, price: r2(price), qty: 1 });
+        renderLines();
+      };
+      pick.onchange = () => {
+        customRow.hidden = pick.value !== '__custom';
+        if (pick.value === '__custom') { form.querySelector('#cName').focus(); return; }
+        const p = db.products.find(x => x.id === pick.value);
+        if (p) add(p.name, p.price, p.id);
+        pick.value = '';
+      };
+      form.querySelector('#cAdd').onclick = () => {
+        const n = form.querySelector('#cName'), pr = form.querySelector('#cPrice');
+        if (!n.value.trim()) { n.focus(); return; }
+        add(n.value.trim(), Math.max(0, num(pr.value)));
+        n.value = ''; pr.value = ''; customRow.hidden = true; pick.value = '';
+      };
+      // 在项目区按 Enter 不要直接提交整张单
+      customRow.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); form.querySelector('#cAdd').click(); } });
+      linesEl.addEventListener('keydown', e => { if (e.key === 'Enter') e.preventDefault(); });
+      linesEl.addEventListener('click', e => {
+        const q = e.target.closest('[data-q]'), rm = e.target.closest('[data-rm]');
+        if (q) { const l = lines[q.dataset.q]; l.qty = Math.max(1, l.qty + +q.dataset.d); renderLines(); }
+        if (rm) { lines.splice(+rm.dataset.rm, 1); renderLines(); }
+      });
+      linesEl.addEventListener('input', e => {
+        const t = e.target, i = t.dataset.qi ?? t.dataset.pi;
+        if (i === undefined) return;
+        const l = lines[i];
+        if (t.dataset.qi !== undefined) l.qty = Math.max(1, parseInt(t.value) || 1); else l.price = r2(Math.max(0, num(t.value)));
+        linesEl.querySelector(`[data-si="${i}"]`).textContent = money(l.qty * l.price);
+        updTotals();
+      });
+      E.discount.addEventListener('input', updTotals);
+      E.received.addEventListener('input', updTotals);
+      E.method.addEventListener('change', updTotals);
+      wireCustField(form, id => { form.querySelector('.walkin').hidden = id !== ''; });
+      renderLines();
+    }, '确认收款');
+}
+function prodForm(p) {
+  const isNew = !p;
+  p = p || { name: '', price: '', stock: null };
+  openSheet(isNew ? '添加产品' : '编辑产品', `<label>产品名称<input name="name" value="${esc(p.name)}" required autocomplete="off"></label>
+    <div class="two"><label>售价 (${esc(db.settings.currency)})<input name="price" type="number" min="0" step="0.01" value="${p.price}" required></label>
+      <label>库存数量<input name="stock" type="number" step="1" value="${tracked(p) ? p.stock : ''}" placeholder="留空 = 不追踪"></label></div>`,
+    f => {
+      Object.assign(p, { name: f.name.trim(), price: r2(num(f.price)), stock: f.stock.trim() === '' ? null : (parseInt(f.stock) || 0) });
+      if (isNew) { p.id = uid(); db.products.push(p); }
+      toast('产品已保存');
+    });
 }
 
 /* ----- 设置 ----- */
@@ -399,6 +553,12 @@ function viewSettings() {
     ${db.catalog.length ? db.catalog.map(t => `<div class="card row"><div class="grow"><div class="name">${esc(t.name)}</div><div class="muted">${t.sessions} 次 · ${money(t.price)}</div></div>
       <button class="btn small" data-act="tplEdit" data-id="${t.id}">编辑</button><button class="btn small danger" data-act="tplDelete" data-id="${t.id}">删除</button></div>`).join('')
       : '<div class="empty">添加常用配套，卖配套时可一键选择</div>'}
+    <div class="h2">零售产品<button class="btn small" data-act="prodNew">＋ 添加</button></div>
+    ${db.products.length ? db.products.slice().sort(byName).map(p => `<div class="card row"><div class="grow"><div class="name">${esc(p.name)}</div>
+        <div class="muted">${money(p.price)} · ${tracked(p) ? `库存 ${p.stock}` : '不追踪库存'}</div></div>
+        ${tracked(p) && p.stock <= 0 ? '<span class="badge warn">缺货</span>' : ''}
+        <button class="btn small" data-act="prodEdit" data-id="${p.id}">编辑</button><button class="btn small danger" data-act="prodDelete" data-id="${p.id}">删除</button></div>`).join('')
+      : '<div class="empty">添加店内销售的美容产品，零售收款时可直接选择</div>'}
     <div class="h2">数据备份</div>
     <div class="card"><p class="muted" style="margin-top:0">所有数据只保存在这台设备的浏览器里。请定期导出备份，清除浏览器数据会导致资料丢失。</p>
       <div class="btns"><button class="btn" data-act="exportData">导出备份</button>
@@ -442,8 +602,9 @@ const actions = {
   custWa: d => waSend(cust(d.id).phone, ''),
   custDelete: d => {
     const c = cust(d.id);
-    if (!confirm(`确定删除顾客「${c.name}」吗？\n该顾客的配套、付款、扣次和预约记录将一并永久删除，无法恢复。`)) return;
+    if (!confirm(`确定删除顾客「${c.name}」吗？\n该顾客的配套、付款、扣次和预约记录将一并永久删除，无法恢复。\n产品零售记录会保留，改记为散客。`)) return;
     for (const k of ['packages', 'payments', 'usages', 'appts']) db[k] = db[k].filter(x => x.custId !== c.id);
+    db.sales.forEach(s => { if (s.custId === c.id) { s.custId = ''; s.walkName = c.name; } });
     db.customers = db.customers.filter(x => x.id !== c.id);
     ui.custId = null; commit(); toast('顾客已删除');
   },
@@ -471,6 +632,18 @@ const actions = {
     const x = db.payments.find(y => y.id === d.id);
     if (confirm(`确定删除付款 #${x.no}（${money(x.amount)}）吗？无法恢复。`)) { db.payments = db.payments.filter(y => y.id !== d.id); commit(); }
   },
+  // 产品零售
+  saleNew: d => saleForm(d.id),
+  saleReceipt: d => showSaleReceipt(db.sales.find(x => x.id === d.id)),
+  saleDelete: d => {
+    const s = db.sales.find(x => x.id === d.id);
+    if (!confirm(`确定删除零售记录 #${s.no}（${money(s.total)}）吗？\n有追踪库存的产品会加回库存。删除后无法恢复。`)) return;
+    s.items.forEach(i => { const p = db.products.find(x => x.id === i.prodId); if (p && tracked(p)) p.stock += i.qty; });
+    db.sales = db.sales.filter(x => x.id !== s.id); commit(); toast('已删除');
+  },
+  prodNew: () => prodForm(),
+  prodEdit: d => prodForm(db.products.find(p => p.id === d.id)),
+  prodDelete: d => { if (confirm('确定删除这个产品吗？（不影响已有的零售记录）')) { db.products = db.products.filter(p => p.id !== d.id); commit(); } },
   // 设置
   tplNew: () => tplForm(),
   tplEdit: d => tplForm(db.catalog.find(t => t.id === d.id)),

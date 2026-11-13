@@ -11,6 +11,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   background: var(--bg); color: var(--text);
@@ -89,6 +90,23 @@ dialog .x { border: 0; background: none; font-size: 18px; padding: 4px 8px; colo
 dialog .body { padding: 8px 16px; overflow-y: auto; }
 dialog footer { display: flex; gap: 10px; justify-content: flex-end; padding: 10px 16px calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 pre.receipt { background: var(--card); border: 1px dashed var(--line); border-radius: 12px; padding: 14px; white-space: pre-wrap; word-break: break-word; font: 14px/1.6 ui-monospace, Consolas, "Microsoft YaHei", monospace; margin: 0 0 12px; }
+
+/* retail sale */
+.line { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.line .x { border: 0; background: none; color: var(--muted); font-size: 16px; padding: 4px 8px; }
+.line .ctl { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.qty { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--card); flex-shrink: 0; }
+.qty button { border: 0; background: none; width: 36px; height: 38px; font-size: 18px; }
+.qty input { width: 44px; border: 0; border-radius: 0; padding: 8px 0; text-align: center; -moz-appearance: textfield; appearance: textfield; }
+.qty input::-webkit-inner-spin-button, .qty input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.line input.price { width: 96px; padding: 8px 10px; }
+.line .sum { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.custom-row { display: grid; grid-template-columns: 1fr 100px auto; gap: 8px; margin: -4px 0 12px; }
+.totals { margin: 2px 0 12px; }
+.totals .row { padding: 2px 0; font-variant-numeric: tabular-nums; }
+.totals .grand { font-size: 20px; font-weight: 700; color: var(--accent); border-top: 1px solid var(--line); margin-top: 4px; padding-top: 6px; }
+.totals .neg { color: var(--danger); }
+.method-sum { font-size: 13px; color: var(--muted); margin: -4px 0 12px; }
 
 /* login */
 #login { display: none; }
